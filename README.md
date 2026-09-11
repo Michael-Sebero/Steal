@@ -17,8 +17,9 @@ steal [ URL1 ] [ URL2 ] /home/you/custom
 * `APT`
 * `Yum`
 * `Flatpak`
-* YT-DLP
-* Gallery-DL
+* `YT-DLP`
+* `Gallery-DL`
+* `Doas`
 
 ## How to Install
 . Place `steal` in `/bin`
