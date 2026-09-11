@@ -1,0 +1,393 @@
+#!/bin/bash
+
+# Check if any arguments were provided
+if [ $# -eq 0 ]; then
+    echo "Usage: $0 ARG1 [ARG2 ARG3 ...]"
+    echo "Example: $0 https://youtube.com/watch?v=example1 package_name 1.deb 1.pkg.tar.zst"
+    echo "         $0 https://youtube.com/watch?v=example1 '/home/user/custom' package_name"
+    echo "         (Provide an absolute path after a URL to set a custom download directory)"
+    echo ""
+    echo "Package managers supported (auto-detected): paru/pacman (Arch), apt (Debian/Ubuntu),"
+    echo "                                             xbps (Void)"
+    exit 1
+fi
+
+# Downloads folder path
+downloads_folder="$HOME/Downloads"
+
+# ---------------------------------------------------------------------------
+# Package manager detection
+# Arch systems check for paru first, falling back to pacman if paru isn't
+# installed. Everything else is matched to its native package manager.
+# ---------------------------------------------------------------------------
+detect_package_manager() {
+    if command -v paru &> /dev/null; then
+        echo "paru"
+    elif command -v pacman &> /dev/null; then
+        echo "pacman"
+    elif command -v apt-get &> /dev/null; then
+        echo "apt"
+    elif command -v xbps-install &> /dev/null; then
+        echo "xbps"
+    else
+        echo "none"
+    fi
+}
+
+PKG_MANAGER=$(detect_package_manager)
+
+if [ "$PKG_MANAGER" = "none" ]; then
+    echo -e "\033[1mWarning: no supported package manager found (paru, pacman, apt, xbps).\033[0m" >&2
+    echo "Downloads and Flatpak installs will still work, but native package installs will be skipped." >&2
+fi
+
+# Install a list of packages by name with the detected package manager
+install_packages() {
+    case "$PKG_MANAGER" in
+        paru)
+            paru -S --skipreview --needed "$@"
+            ;;
+        pacman)
+            sudo pacman -S --needed --noconfirm "$@"
+            ;;
+        apt)
+            sudo apt-get install -y "$@"
+            ;;
+        xbps)
+            sudo xbps-install -y "$@"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Refresh/sync the package database for the detected package manager
+sync_database() {
+    case "$PKG_MANAGER" in
+        paru)
+            paru -Syyu
+            ;;
+        pacman)
+            sudo pacman -Syyu
+            ;;
+        apt)
+            sudo apt-get update
+            ;;
+        xbps)
+            sudo xbps-install -S
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Function to check if a string is a URL
+is_url() {
+    local input="$1"
+    [[ "$input" =~ ^https?:// ]] && return 0 || return 1
+}
+
+# Function to check if a string is a .deb or .udeb file
+is_deb_file() {
+    local input="$1"
+    [[ "$input" =~ \.(deb|udeb)$ ]] && return 0 || return 1
+}
+
+# Function to check if a string is a .pkg.tar.zst or .pkg.tar.xz file (Arch)
+is_arch_pkg_file() {
+    local input="$1"
+    [[ "$input" =~ \.pkg\.tar\.(zst|xz)$ ]] && return 0 || return 1
+}
+
+# Function to check if a string looks like an absolute directory path
+is_dir_path() {
+    local input="$1"
+    [[ "$input" =~ ^/ ]] && return 0 || return 1
+}
+
+# Initialize empty arrays to hold packages for the native package manager and flatpak
+native_packages=()
+flatpak_packages=()
+deb_packages=()
+pkg_files=()
+
+# Loop through all arguments
+args=("$@")
+i=0
+while [ $i -lt ${#args[@]} ]; do
+    arg="${args[$i]}"
+    if is_url "$arg"; then
+        # Check if the next argument is a custom directory path
+        next_arg="${args[$((i+1))]}"
+        if [ -n "$next_arg" ] && is_dir_path "$next_arg"; then
+            dest_folder="$next_arg"
+            i=$((i+2))
+        else
+            dest_folder="$downloads_folder"
+            i=$((i+1))
+        fi
+
+        # Create destination directory if it doesn't exist
+        mkdir -p "$dest_folder"
+
+        echo -e "\033[1mDetected URL: $arg\033[0m"
+        echo -e "\033[1mDestination: $dest_folder\033[0m"
+
+        # Get video details to check resolution
+        video_info=$(yt-dlp --get-format --skip-download "$arg")
+
+        # Check for 4K quality (2160p) and select 1440p if detected
+        if echo "$video_info" | grep -q "2160p"; then
+            echo "4K video detected. Downloading 1440p quality."
+            format="bestvideo[height<=1440]+bestaudio/best[height<=1440]"
+        else
+            format="bestvideo+bestaudio/best"
+        fi
+
+        # Download video using yt-dlp with the chosen format
+        yt-dlp -f "$format" -o "$dest_folder/%(title)s.%(ext)s" "$arg"
+
+        # Check the exit status of yt-dlp
+        if [ $? -ne 0 ]; then
+            echo "yt-dlp failed. Attempting fallback with gallery-dl..."
+            gallery-dl -d "$dest_folder" "$arg"
+            if [ $? -ne 0 ]; then
+                echo "Failed to download from $arg with both yt-dlp and gallery-dl. Skipping..."
+            else
+                echo "Download completed for $arg via gallery-dl."
+            fi
+        else
+            echo "Download completed for $arg via yt-dlp."
+        fi
+    elif is_arch_pkg_file "$arg"; then
+        # Add .pkg.tar.zst or .pkg.tar.xz file to pkg_files array
+        pkg_files+=("$arg")
+        i=$((i+1))
+    elif is_deb_file "$arg"; then
+        # Add .deb or .udeb file to deb_packages array
+        deb_packages+=("$arg")
+        i=$((i+1))
+    else
+        # Add package to appropriate list (either native package manager or flatpak)
+        if [[ "$arg" =~ / ]]; then
+            # If the argument contains a slash, assume it's a flatpak package
+            flatpak_packages+=("$arg")
+        else
+            # Otherwise, treat it as a package for the native package manager
+            native_packages+=("$arg")
+        fi
+        i=$((i+1))
+    fi
+done
+
+# Install .pkg.tar.zst / .pkg.tar.xz files (Arch package format, via paru/pacman -U)
+if [ ${#pkg_files[@]} -gt 0 ]; then
+    if [ "$PKG_MANAGER" = "paru" ] || [ "$PKG_MANAGER" = "pacman" ]; then
+        echo -e "\033[1mInstalling package files with $PKG_MANAGER\033[0m"
+        for pkg_file in "${pkg_files[@]}"; do
+            if [ -f "$pkg_file" ]; then
+                echo "Installing $pkg_file..."
+                if [ "$PKG_MANAGER" = "paru" ]; then
+                    paru -U --noconfirm "$pkg_file"
+                else
+                    sudo pacman -U --noconfirm "$pkg_file"
+                fi
+                if [ $? -eq 0 ]; then
+                    echo "Successfully installed $pkg_file"
+                else
+                    echo "Failed to install $pkg_file"
+                fi
+            else
+                echo "File not found: $pkg_file"
+            fi
+        done
+    else
+        echo "Skipping ${#pkg_files[@]} .pkg.tar.zst/.pkg.tar.xz file(s): these need pacman or paru, neither of which was detected." >&2
+    fi
+fi
+
+# Install/update packages via the detected package manager (if any packages were collected)
+if [ ${#native_packages[@]} -gt 0 ]; then
+    if [ "$PKG_MANAGER" = "none" ]; then
+        echo "No supported package manager found; sending ${#native_packages[@]} package(s) to Flatpak instead."
+        flatpak_packages+=("${native_packages[@]}")
+    else
+        echo -e "\033[1mInstalling packages with $PKG_MANAGER\033[0m"
+
+        # Create a temporary file to capture stderr for error analysis
+        temp_error_file=$(mktemp)
+
+        # Run the install, capturing stderr for later analysis while still showing it live
+        install_packages "${native_packages[@]}" 2> >(tee "$temp_error_file" >&2)
+        install_exit_code=$?
+
+        # Check if the install failed
+        if [ $install_exit_code -ne 0 ]; then
+            # Read the error output to determine failure type
+            error_content=$(cat "$temp_error_file")
+
+            # Check for genuine errors that warrant database sync
+            if echo "$error_content" | grep -qi "failed to retrieve\|connection\|timeout\|network\|mirror\|database\|404\|could not resolve\|temporary failure\|download.*failed\|unable to fetch\|no such file or directory"; then
+                echo "Detected network/database issue. Attempting database sync and retry..."
+                if sync_database; then
+                    echo "Database sync successful. Retrying package installation..."
+                    install_packages "${native_packages[@]}"
+                    if [ $? -ne 0 ]; then
+                        echo ""
+                        flatpak_packages+=("${native_packages[@]}")
+                    fi
+                else
+                    echo ""
+                    flatpak_packages+=("${native_packages[@]}")
+                fi
+            else
+                # Assume user cancellation or package not found - go straight to flatpak
+                echo ""
+                flatpak_packages+=("${native_packages[@]}")
+            fi
+        fi
+
+        # Clean up temporary file
+        rm -f "$temp_error_file"
+    fi
+fi
+
+# Install packages via flatpak (if any packages were collected)
+if [ ${#flatpak_packages[@]} -gt 0 ]; then
+    echo -e "\033[1mInstalling packages with Flatpak\033[0m"
+    for package in "${flatpak_packages[@]}"; do
+        flatpak install -y "$package"
+    done
+fi
+
+# Install .deb packages
+if [ ${#deb_packages[@]} -gt 0 ]; then
+    case "$PKG_MANAGER" in
+        apt)
+            echo -e "\033[1mInstalling .deb packages with apt\033[0m"
+            for deb_file in "${deb_packages[@]}"; do
+                if [ -f "$deb_file" ]; then
+                    echo "Installing $deb_file..."
+                    # apt needs a path (not a bare filename) to treat this as a local file
+                    deb_path="$deb_file"
+                    [[ "$deb_path" != */* ]] && deb_path="./$deb_path"
+                    if sudo apt-get install -y "$deb_path"; then
+                        echo "Successfully installed $deb_file"
+                    else
+                        echo "apt-get failed, falling back to dpkg -i + fix-broken install..."
+                        sudo dpkg -i "$deb_file"
+                        sudo apt-get install -f -y
+                    fi
+                else
+                    echo "File not found: $deb_file"
+                fi
+            done
+            ;;
+        paru|pacman)
+            echo -e "\033[1mProcessing .deb packages with debtap\033[0m"
+
+            # Check if debtap database files exist
+            debtap_cache="/var/cache/debtap"
+            pkgfile_cache="/var/cache/pkgfile"
+
+            # Create directories if they don't exist
+            sudo mkdir -p "$debtap_cache" "$pkgfile_cache"
+
+            # Check if required database files exist
+            need_update=false
+            if [[ ! $(ls "$pkgfile_cache"/*.files 2>/dev/null) ]] || \
+               [[ ! $(ls "$debtap_cache"/*-packages-files 2>/dev/null) ]] || \
+               [[ ! -e "$debtap_cache/extended-base-packages-list" ]] || \
+               [[ ! -e "$debtap_cache/aur-packages" ]] || \
+               [[ ! -e "$debtap_cache/virtual-packages" ]]; then
+                need_update=true
+            fi
+
+            if [ "$need_update" = true ]; then
+                echo "Updating debtap database..."
+                sudo debtap -u
+
+                # If update failed, create minimal database files manually
+                if [ $? -ne 0 ]; then
+                    echo "Debtap update failed. Creating minimal database files..."
+
+                    # Create minimal pkgfile database (just touch a .files file)
+                    sudo touch "$pkgfile_cache/core.files"
+
+                    # Download and create Debian packages database
+                    echo "Downloading Debian package database..."
+                    curl -s "http://ftp.debian.org/debian/dists/stable/main/binary-amd64/Packages.gz" 2>/dev/null | gunzip | sudo tee "$debtap_cache/debian-packages-files" > /dev/null
+
+                    # Download and create Ubuntu packages database
+                    echo "Downloading Ubuntu package database..."
+                    curl -s "http://archive.ubuntu.com/ubuntu/dists/noble/main/binary-amd64/Packages.gz" 2>/dev/null | gunzip | sudo tee "$debtap_cache/ubuntu-packages-files" > /dev/null
+
+                    # Create extended-base-packages-list
+                    sudo pacman -Sg base base-devel | awk '{print $2}' | sudo tee "$debtap_cache/extended-base-packages-list" > /dev/null
+
+                    # Create AUR packages list
+                    echo "Downloading AUR packages list..."
+                    curl -s "https://aur.archlinux.org/packages.gz" 2>/dev/null | gunzip | sudo tee "$debtap_cache/aur-packages" > /dev/null
+
+                    # Create virtual packages list
+                    echo "Downloading virtual packages list..."
+                    curl -s "https://archlinux.org/groups/x86_64/json/" 2>/dev/null | sudo tee "$debtap_cache/virtual-packages" > /dev/null
+
+                    # If virtual packages failed, create empty file
+                    if [ ! -s "$debtap_cache/virtual-packages" ]; then
+                        sudo touch "$debtap_cache/virtual-packages"
+                    fi
+
+                    echo "Minimal database created. Debtap should now work with reduced accuracy."
+                fi
+            else
+                echo "Debtap database already exists, skipping update..."
+            fi
+
+            # Convert and install each .deb package
+            for deb_file in "${deb_packages[@]}"; do
+                if [ -f "$deb_file" ]; then
+                    echo "Converting $deb_file..."
+
+                    # Create a temporary working directory in home
+                    temp_work_dir="$HOME/debtap-work-$(date +%s)"
+                    mkdir -p "$temp_work_dir"
+
+                    # Copy deb file to temp directory
+                    cp "$deb_file" "$temp_work_dir/"
+
+                    # Change to temp directory
+                    cd "$temp_work_dir" || continue
+
+                    # Run debtap conversion
+                    deb_basename=$(basename "$deb_file")
+                    sudo debtap -q "$deb_basename"
+
+                    # Find the generated package file
+                    pkg_file=$(find . -maxdepth 1 -name "*.pkg.tar.zst" -o -name "*.pkg.tar.xz" 2>/dev/null | head -n 1)
+
+                    if [ -n "$pkg_file" ] && [ -f "$pkg_file" ]; then
+                        echo "Installing converted package: $pkg_file"
+                        sudo pacman -U --noconfirm "$pkg_file"
+
+                        # Clean up temp directory on success
+                        cd "$HOME"
+                        rm -rf "$temp_work_dir"
+                        echo "Successfully installed $deb_file"
+                    else
+                        echo "Failed to find converted package for $deb_file"
+                        cd "$HOME"
+                        echo "Temp files kept in: $temp_work_dir"
+                    fi
+                else
+                    echo "File not found: $deb_file"
+                fi
+            done
+            ;;
+        *)
+            echo "Skipping ${#deb_packages[@]} .deb file(s): no compatible installer (apt, or debtap with pacman/paru) was detected." >&2
+            ;;
+    esac
+fi

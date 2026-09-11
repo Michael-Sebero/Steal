@@ -9,14 +9,16 @@ steal [ URL1 ] [ URL2 ]
 steal [ URL1 ] [ URL2 ] /home/you/custom
 
 ```
-## Requirements 
-. Paru
-
-. Flatpak
-
-. YT-DLP
-
-. Gallery-DL
+## Compatibility
+* `Pacman` 
+* `Paru`
+* `Yay`
+* `XBPS`
+* `APT`
+* `Yum`
+* `Flatpak`
+* YT-DLP
+* Gallery-DL
 
 ## How to Install
 . Place `steal` in `/bin`
