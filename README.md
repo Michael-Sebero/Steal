@@ -19,7 +19,7 @@ steal [ URL1 ] [ URL2 ] /home/you/custom
 * `Flatpak`
 * `YT-DLP`
 * `Gallery-DL`
-* `Doas`
+* `DOAS`
 
 ## How to Install
 . Place `steal` in `/bin`
