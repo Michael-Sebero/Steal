@@ -15,7 +15,6 @@ steal [ URL1 ] [ URL2 ] /home/you/custom
 * `Yay`
 * `XBPS`
 * `APT`
-* `Yum`
 * `Flatpak`
 * `YT-DLP`
 * `Gallery-DL`
