@@ -1,5 +1,5 @@
 ## How Steal Works
-Steal works by cycling through 2 install commands until it finds the package you want to download. It can also download media files.
+Steal works by cycling through package managers and install commands until it finds the package you want to download. It can also download media files.
 
 ```
 steal [ PACKAGE1 ] [ PACKAGE2 ]
