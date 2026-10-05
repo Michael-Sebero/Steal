@@ -7,6 +7,8 @@ steal [ PACKAGE1 ] [ PACKAGE2 ]
 steal [ URL1 ] [ URL2 ]
 
 steal [ URL1 ] [ URL2 ] /home/you/custom
+
+steal ./package.deb ./package.pkg.tar.zst ./app.flatpakref
 ```
 
 ## Compatibility
