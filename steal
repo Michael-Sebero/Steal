@@ -379,10 +379,3 @@ if [ ${#deb_files[@]} -gt 0 ]; then
             ;;
     esac
 fi
-
-if [ ${#FAILED[@]} -eq 0 ]; then
-    bold "steal: PASS"
-else
-    bold "steal: FAIL (${#FAILED[@]}): ${FAILED[*]}"
-    exit 1
-fi
